@@ -691,6 +691,7 @@
     lastTick = t;
     updateGame(t, dt);
     updateMatch(t);
+    updateBattle(t, dt);
     updateFx(dt);
     sound.setTempo(screen === "solo" && round.phase === "playing" && round.timeLeft <= 10 ? 1.2 : 1);
 
@@ -704,6 +705,8 @@
     else if (screen === "solo") drawSolo(W, H, t);
     else if (screen === "online") drawOnline(W, H, t);
     else if (screen === "match") drawMatch(W, H, t);
+    else if (screen === "conquest") drawConquest(W, H, t);
+    else if (screen === "battle") drawBattle(W, H, t);
     else drawDuel(W, H, t);
     drawFx();
     drawSoundHint(W, H);
@@ -787,16 +790,20 @@
     buttons.push({ x: w / 2 - d / 2, y: cy - d / 2, w: d, h: d, run: () => { demo = makeCard(FULL, Math.floor(rand() * FULL.cards.length)); sound.click(); } });
     const y = cy + d / 2 + 22;
     const cur = progress.current();
-    menuButton(x0, y, cw, BH, "Levels", `Level ${cur + 1}: ${LEVELS[cur].name}  ·  ${progress.total()}/${LEVELS.length * 3} stars`, 13,
-      () => { screen = "levels"; });
-    menuButton(x0, y + GAP, cw, BH, "Play Online", "Challenge a friend on another phone", 39, openOnline);
     const half = (cw - 12) / 2;
+    const conquestSub = camp.s && !camp.s.over
+      ? `Turn ${camp.s.turn}  ·  ${camp.owned("you")}/${MAP.length} lands held`
+      : "Strategy campaign";
+    menuButton(x0, y, cw, BH, "Conquest", conquestSub, 43, openConquest, true);
+    menuButton(x0, y + GAP, half, BH, "Levels", `★ ${progress.total()} of ${LEVELS.length * 3}`, 13,
+      () => { screen = "levels"; });
+    menuButton(x0 + half + 12, y + GAP, half, BH, "Online", "Play a friend", 39, openOnline);
     menuButton(x0, y + 2 * GAP, half, BH, "Sprint",
       BESTS[SPRINT.bestKey] > 0 ? `Best: ${BESTS[SPRINT.bestKey]}` : "60 seconds", 32,
       () => { round.setup(SPRINT, -1); screen = "solo"; });
     menuButton(x0 + half + 12, y + 2 * GAP, half, BH, "Wheels",
       BESTS[WHEELS.bestKey] > 0 ? `Best: ${BESTS[WHEELS.bestKey]}` : "Rings spin", 19,
-      () => { round.setup(WHEELS, -1); screen = "solo"; }, true);
+      () => { round.setup(WHEELS, -1); screen = "solo"; });
     menuButton(x0, y + 3 * GAP, cw, BH, "Duel", "Two players, one phone", 4, () => { duel.reset(); screen = "duel"; });
   }
 
@@ -866,6 +873,7 @@
     text("How to Play", tx, y, 28, 900, "#331F73", "left");
     y += 8;
     const sections = [
+      ["Conquest", "Capture the realm territory by territory, from Highkeep to Dreadspire. Each attack is a match against an enemy commander; forests spin the cards, mountains shrink the symbols, swamps shift them and castles turn them into wheels. Your lands earn gold for Scouts, Frost and Rally, and the Ash Legion attacks your border between turns."],
       ["The secret", "Any two cards share exactly one symbol, never more and never less. Symbols vary in size and rotation, so look carefully."],
       ["Levels", "Twelve levels: small decks first, then the full 8-symbol deck, spinning cards, tiny symbols and reshuffles. Reach the goal before time runs out for one star; score more for two or three. Each level unlocks the next."],
       ["Sprint and Wheels", "Tap the symbol both cards share. A wrong tap costs 3 seconds. Score as much as you can in 60 seconds. In Wheels, each card is two rings turning in opposite directions, and they speed up as you score."],
@@ -1700,6 +1708,660 @@
     }
   }
 
+  // ------------------------------------------------------------ Conquest: a strategy campaign
+  // A map of territories joined by roads. You hold Highkeep (bottom); the Ash Legion holds
+  // Dreadspire (top). Attack a territory next to yours: the battle is a Pairo match against a
+  // computer commander, shaped by the territory's terrain. Territories earn gold each turn, gold
+  // buys battle aids, and after every turn the Legion expands or attacks your border.
+  const TERRAIN = {
+    plains:   { name: "Plains",    effect: "Open ground, no tricks.",              cfg: {},                  income: 20 },
+    forest:   { name: "Forest",    effect: "The cards spin among the trees.",      cfg: { spin: true },      income: 15 },
+    mountain: { name: "Mountains", effect: "Tiny symbols in the high passes.",     cfg: { tiny: true },      income: 15 },
+    swamp:    { name: "Swamp",     effect: "Symbols shift every few seconds.",     cfg: { reshuffle: true }, income: 15 },
+    castle:   { name: "Castle",    effect: "Wheel cards: two rings turning.",      cfg: { wheels: true },    income: 30 }
+  };
+  const MAP = [
+    { name: "Highkeep",    x: 0.50, y: 0.94, terrain: "castle",   power: 0 },
+    { name: "Willowmere",  x: 0.22, y: 0.80, terrain: "plains",   power: 1 },
+    { name: "Brackenford", x: 0.76, y: 0.81, terrain: "forest",   power: 1 },
+    { name: "Stonewatch",  x: 0.11, y: 0.63, terrain: "mountain", power: 2 },
+    { name: "Mistvale",    x: 0.46, y: 0.66, terrain: "swamp",    power: 2 },
+    { name: "Emberfield",  x: 0.86, y: 0.63, terrain: "plains",   power: 2 },
+    { name: "Thornwood",   x: 0.27, y: 0.49, terrain: "forest",   power: 3 },
+    { name: "Saltmarsh",   x: 0.66, y: 0.48, terrain: "swamp",    power: 3 },
+    { name: "Frostpeak",   x: 0.09, y: 0.32, terrain: "mountain", power: 4 },
+    { name: "Ravenmoor",   x: 0.47, y: 0.33, terrain: "plains",   power: 3 },
+    { name: "Ironhold",    x: 0.88, y: 0.32, terrain: "castle",   power: 4 },
+    { name: "Ashen Pass",  x: 0.28, y: 0.17, terrain: "mountain", power: 4 },
+    { name: "Gloomfen",    x: 0.70, y: 0.17, terrain: "swamp",    power: 4 },
+    { name: "Dreadspire",  x: 0.50, y: 0.04, terrain: "castle",   power: 5 }
+  ];
+  const ROADS = [[0, 1], [0, 2], [1, 3], [1, 4], [2, 4], [2, 5], [3, 6], [4, 6], [4, 7], [5, 7], [5, 10], [6, 8], [6, 9],
+    [7, 9], [7, 10], [8, 11], [9, 11], [9, 12], [10, 12], [11, 13], [12, 13]];
+  const ADJ = MAP.map(() => []);
+  for (const [a, b] of ROADS) { ADJ[a].push(b); ADJ[b].push(a); }
+  const HOME = 0, DREAD = 13;
+  /** Seconds the enemy commander needs per match, by territory power 1..5 (before difficulty). */
+  const POWER_SECONDS = [0, 5.2, 4.4, 3.8, 3.3, 2.9];
+  const DIFFICULTY = {
+    easy:   { label: "Easy",   mul: 1.3,  mistakes: 0.14 },
+    normal: { label: "Normal", mul: 1.0,  mistakes: 0.10 },
+    hard:   { label: "Hard",   mul: 0.82, mistakes: 0.06 }
+  };
+  const ITEMS = {
+    scout: { name: "Scout", price: 60,  desc: "Shows you the match for a moment." },
+    frost: { name: "Frost", price: 100, desc: "Freezes the enemy commander for 4 seconds." },
+    rally: { name: "Rally", price: 150, desc: "Adds 1 point to your score." }
+  };
+  const OWNER_COLOR = { you: "#1E78E6", enemy: "#E63946", neutral: "#8C8577" };
+  const deckOrderFor = power => power <= 1 ? 3 : power === 2 ? 5 : 7;
+  const targetFor = power => power <= 2 ? 5 : power <= 4 ? 6 : 7;
+
+  const camp = {
+    s: null,              // saved state: {v, diff, owner[], gold, turn, items, over}
+    sel: -1,              // selected territory
+    notices: [],          // dialogs to show on the map, in order
+    toast: null,          // {text, at}
+    shop: false,
+    load() {
+      try {
+        const s = JSON.parse(load("pairo.conquest", "null"));
+        if (s && s.v === 1 && Array.isArray(s.owner) && s.owner.length === MAP.length && DIFFICULTY[s.diff]) this.s = s;
+      } catch { this.s = null; }
+    },
+    save() { store("pairo.conquest", JSON.stringify(this.s)); },
+    newGame(diff) {
+      const owner = MAP.map(() => "neutral");
+      owner[HOME] = "you"; owner[DREAD] = "enemy"; owner[10] = "enemy";
+      this.s = { v: 1, diff, owner, gold: 120, turn: 1, items: { scout: 1, frost: 0, rally: 0 }, over: null };
+      this.sel = -1; this.notices = []; this.shop = false;
+      this.save();
+    },
+    owned(who) { return this.s.owner.reduce((n, o) => n + (o === who ? 1 : 0), 0); },
+    income() { return this.s.owner.reduce((g, o, i) => g + (o === "you" ? TERRAIN[MAP[i].terrain].income : 0), 0); },
+    attackable(i) { return this.s.owner[i] !== "you" && ADJ[i].some(j => this.s.owner[j] === "you"); },
+    powerOf(i) { return Math.min(5, MAP[i].power + (this.s.owner[i] === "enemy" && i !== DREAD ? 1 : 0)); }
+  };
+  camp.load();
+
+  function openConquest() { camp.sel = -1; camp.shop = false; screen = "conquest"; }
+
+  // ---- battle
+  const battle = {
+    node: -1, defense: false, power: 1, target: 5, cfg: {}, deck: null, dealer: null,
+    center: null, hands: [null, null], scores: [0, 0], phase: "intro",
+    countdownAt: LONG_AGO, lastCount: -1, goAt: LONG_AGO, overAt: LONG_AGO,
+    aiStartAt: 0, aiNextAt: 0, aiFrozenUntil: LONG_AGO, aiMissAt: LONG_AGO,
+    frozenUntil: LONG_AGO, shakeAt: LONG_AGO, leaving: null, won: false, scoutUntil: LONG_AGO, rallied: false,
+    enemyAt: { x: 0, y: 0 }
+  };
+
+  function battleCard(idx) { return initRingSpeeds(makeCard(battle.deck, idx, battle.cfg)); }
+
+  function startBattle(node, defense, power) {
+    const b = battle;
+    b.node = node; b.defense = defense; b.power = power; b.target = targetFor(power);
+    b.cfg = { ...TERRAIN[MAP[node].terrain].cfg };
+    b.deck = DECKS[deckOrderFor(power)];
+    b.dealer = new Dealer(b.deck);
+    const c = b.dealer.draw(), h0 = b.dealer.draw(c), h1 = b.dealer.draw(c, h0);
+    b.center = battleCard(c); b.hands = [battleCard(h0), battleCard(h1)];
+    b.scores = [0, 0]; b.phase = "intro"; b.leaving = null; b.won = false; b.rallied = false;
+    b.frozenUntil = LONG_AGO; b.aiFrozenUntil = LONG_AGO; b.scoutUntil = LONG_AGO; b.shakeAt = LONG_AGO;
+    camp.sel = -1;
+    screen = "battle";
+  }
+
+  function aiDelay() {
+    const d = DIFFICULTY[camp.s.diff], b = battle;
+    const terrainSlow = b.cfg.spin || b.cfg.tiny || b.cfg.reshuffle || b.cfg.wheels ? 1.08 : 1;
+    return POWER_SECONDS[b.power] * d.mul * terrainSlow * (0.7 + 0.6 * rand()) * 1000;
+  }
+  function scheduleAi(t) { battle.aiStartAt = t; battle.aiNextAt = t + aiDelay(); }
+
+  function updateBattle(t, dt) {
+    if (screen !== "battle") return;
+    const b = battle;
+    if (b.phase === "countdown") {
+      const e = (t - b.countdownAt) / 1000, n = COUNTDOWN_S - Math.floor(e);
+      if (e >= COUNTDOWN_S) {
+        b.phase = "playing"; b.goAt = t;
+        b.center.born = t; b.hands[0].born = t; b.hands[1].born = t;
+        scheduleAi(t);
+        sound.go();
+      } else if (n !== b.lastCount) { b.lastCount = n; sound.tick(); }
+      return;
+    }
+    if (b.phase !== "playing") return;
+    const cards = [b.center, b.hands[0], b.hands[1], b.leaving && b.leaving.card];
+    for (const c of cards) {
+      if (!c) continue;
+      if (c.spin && !REDUCED) c.angle += c.spin * dt;
+      if (c.wheel) {
+        const k = REDUCED ? 0.4 : 1.3;
+        c.ringAngle[1] += c.ringSpeed[1] * k * dt; c.ringAngle[2] += c.ringSpeed[2] * k * dt;
+      }
+    }
+    if (b.cfg.reshuffle) {
+      for (const c of [b.center, b.hands[0], b.hands[1]]) {
+        if (t - c.layoutAt > RESHUFFLE_MS && t - c.flyAt > FLY_MS) { c.slots = layout(c.symbols, b.cfg.tiny); c.layoutAt = t; c.born = t; }
+      }
+    }
+    // The enemy commander.
+    if (t >= b.aiNextAt && t >= b.aiFrozenUntil) {
+      if (rand() < DIFFICULTY[camp.s.diff].mistakes) {
+        b.aiFrozenUntil = t + FREEZE_MS; b.aiMissAt = t;
+        xMark(b.enemyAt.x, b.enemyAt.y, false);
+        b.aiStartAt = b.aiFrozenUntil; b.aiNextAt = b.aiFrozenUntil + aiDelay() * 0.6;
+      } else {
+        claim(1);
+      }
+    }
+  }
+
+  function claim(p) {
+    const b = battle, t = now();
+    b.scores[p]++;
+    const next = b.dealer.draw(b.center.index, b.hands[0].index, b.hands[1].index);
+    b.leaving = { card: b.center, start: t };
+    b.center = b.hands[p];
+    b.center.born = LONG_AGO; b.center.flyAt = t; b.center.flyFrom = p;
+    b.hands[p] = battleCard(next);
+    if (p === 1) {
+      sound.oppScore(); haptic(8);
+      burst(b.enemyAt.x, b.enemyAt.y, "#E63946");
+    }
+    if (b.scores[p] >= b.target) finishBattle(p === 0);
+    else scheduleAi(t);
+  }
+
+  function playerTap(sym, sx, sy) {
+    const b = battle;
+    if (b.phase !== "playing" || now() < b.frozenUntil) return;
+    if (sym === shared(b.deck, b.center.index, b.hands[0].index)) {
+      sound.match(); haptic(15);
+      burst(sx, sy, colorOf(sym));
+      floatText("+1", sx, sy - 12, "#fff", false);
+      claim(0);
+    } else {
+      sound.miss(); haptic([30, 40, 30]);
+      xMark(sx, sy, false);
+      b.frozenUntil = now() + FREEZE_MS; b.shakeAt = now();
+    }
+  }
+
+  function useItem(kind) {
+    const b = battle, s = camp.s;
+    if (b.phase !== "playing" || !s.items[kind]) return;
+    const t = now();
+    if (kind === "scout") { b.scoutUntil = t + 1400; }
+    else if (kind === "frost") {
+      b.aiFrozenUntil = Math.max(b.aiFrozenUntil, t) + 4000;
+      b.aiStartAt = b.aiFrozenUntil; b.aiNextAt = b.aiFrozenUntil + aiDelay() * 0.6;
+    } else if (kind === "rally") {
+      if (b.rallied) return;
+      b.rallied = true;
+      b.scores[0]++;
+      floatText("+1", W / 2, H * 0.55, "#FFE08A", false);
+      if (b.scores[0] >= b.target) finishBattle(true);
+    }
+    s.items[kind]--;
+    camp.save();
+    sound.star();
+  }
+
+  function finishBattle(won) {
+    const b = battle;
+    b.phase = "over"; b.won = won; b.overAt = now();
+    if (won) { sound.win(); confetti(W); } else sound.timeup();
+  }
+
+  function retreat() {
+    const b = battle;
+    if (b.phase === "intro" && !b.defense) { screen = "conquest"; return; }
+    if (b.phase !== "over") finishBattle(false);
+  }
+
+  /** Applies a finished battle to the campaign, then runs the enemy's turn. */
+  function applyBattle() {
+    const b = battle, s = camp.s, name = MAP[b.node].name;
+    screen = "conquest";
+    if (!b.defense) {
+      if (b.won) {
+        s.owner[b.node] = "you";
+        const bonus = 25 * b.power;
+        s.gold += bonus;
+        if (b.node === DREAD) {
+          s.over = "won";
+          camp.save();
+          camp.notices.push({ title: "Victory!", body: `Dreadspire has fallen and the Ash Legion is broken. You conquered the realm in ${s.turn} turns on ${DIFFICULTY[s.diff].label}.`,
+            primary: { label: "New campaign", run: () => { camp.s = null; camp.save(); } }, links: [{ label: "Menu", run: () => { screen = "menu"; } }] });
+          confetti(W);
+          return;
+        }
+        camp.toast = { text: `${name} is yours! +${bonus} gold`, at: now() };
+      } else {
+        camp.toast = { text: `Your army fell back from ${name}.`, at: now() };
+      }
+      endTurn();
+    } else {
+      if (b.won) {
+        const bonus = 20 * b.power;
+        s.gold += bonus;
+        camp.toast = { text: `${name} holds! +${bonus} gold`, at: now() };
+      } else {
+        s.owner[b.node] = "enemy";
+        if (b.node === HOME) {
+          s.over = "lost";
+          camp.notices.push({ title: "Highkeep has fallen", body: "The Ash Legion took your capital. The campaign is lost, but the realm can be fought for again.",
+            primary: { label: "New campaign", run: () => { camp.s = null; camp.save(); } }, links: [{ label: "Menu", run: () => { screen = "menu"; } }] });
+        } else {
+          camp.toast = { text: `${name} was lost to the Ash Legion.`, at: now() };
+        }
+      }
+      camp.save();
+    }
+  }
+
+  /** Income, then the Ash Legion moves: it attacks your border or takes a neutral territory. */
+  function endTurn() {
+    const s = camp.s;
+    s.turn++;
+    const income = camp.income();
+    s.gold += income;
+    const enemy = [], border = [], neutralNext = [];
+    s.owner.forEach((o, i) => { if (o === "enemy") enemy.push(i); });
+    s.owner.forEach((o, i) => {
+      const nearEnemy = ADJ[i].some(j => s.owner[j] === "enemy");
+      if (o === "you" && nearEnemy) border.push(i);
+      if (o === "neutral" && nearEnemy) neutralNext.push(i);
+    });
+    const pAttack = Math.min(0.6, 0.2 + s.turn * 0.035);
+    if (border.length && rand() < pAttack) {
+      const outer = border.filter(i => i !== HOME);
+      const target = (outer.length ? outer : border)[Math.floor(rand() * (outer.length ? outer.length : border.length))];
+      const power = Math.max(2, Math.min(5, 2 + Math.floor(s.turn / 4)));
+      const name = MAP[target].name;
+      camp.notices.push({
+        title: target === HOME ? "Highkeep is under siege!" : "Under attack!",
+        body: `The Ash Legion marches on ${name}. Win the battle to hold it` + (target === HOME ? "; lose, and the campaign is over." : ", or let it go."),
+        primary: { label: "Defend", run: () => startBattle(target, true, power) },
+        links: target === HOME ? [] : [{ label: "Give it up", run: () => {
+          s.owner[target] = "enemy"; camp.save();
+          camp.toast = { text: `${name} was lost to the Ash Legion.`, at: now() };
+        } }]
+      });
+    } else if (neutralNext.length && rand() < 0.6) {
+      const i = neutralNext[Math.floor(rand() * neutralNext.length)];
+      s.owner[i] = "enemy";
+      camp.toast = { text: `The Ash Legion took ${MAP[i].name}. Your lands earn +${income} gold.`, at: now() };
+    } else if (!camp.toast || now() - camp.toast.at > 50) {
+      camp.toast = { text: `Your lands earn +${income} gold.`, at: now() };
+    }
+    camp.save();
+  }
+
+  function buy(kind) {
+    const s = camp.s, item = ITEMS[kind];
+    if (s.gold < item.price) return;
+    s.gold -= item.price; s.items[kind]++;
+    camp.save();
+    sound.click();
+  }
+
+  // ---- drawing: the map
+  function terrainIcon(kind, x, y, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (kind === "plains") {
+      ctx.fillStyle = "#F2B600"; ctx.beginPath(); ctx.arc(s * 0.25, -s * 0.25, s * 0.28, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#6BAA4A"; ctx.beginPath(); ctx.ellipse(-s * 0.1, s * 0.35, s * 0.75, s * 0.35, 0, Math.PI, 0); ctx.fill();
+    } else if (kind === "forest") {
+      for (const [dx, sz] of [[-0.32, 0.9], [0.3, 1.05]]) {
+        ctx.fillStyle = "#7A5230"; ctx.fillRect(dx * s - s * 0.06, s * 0.25, s * 0.12, s * 0.3);
+        ctx.fillStyle = "#2A7D46";
+        ctx.beginPath(); ctx.moveTo(dx * s, -s * 0.55 * sz); ctx.lineTo(dx * s + s * 0.35 * sz, s * 0.3); ctx.lineTo(dx * s - s * 0.35 * sz, s * 0.3); ctx.closePath(); ctx.fill();
+      }
+    } else if (kind === "mountain") {
+      ctx.fillStyle = "#7C7F8C";
+      ctx.beginPath(); ctx.moveTo(-s * 0.75, s * 0.45); ctx.lineTo(-s * 0.15, -s * 0.55); ctx.lineTo(s * 0.2, s * 0.05); ctx.lineTo(s * 0.4, -s * 0.25); ctx.lineTo(s * 0.8, s * 0.45); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.moveTo(-s * 0.15, -s * 0.55); ctx.lineTo(s * 0.02, -s * 0.27); ctx.lineTo(-s * 0.3, -s * 0.3); ctx.closePath(); ctx.fill();
+    } else if (kind === "swamp") {
+      ctx.strokeStyle = "#2E9C9C"; ctx.lineWidth = s * 0.14; ctx.lineCap = "round";
+      for (const dy of [-0.25, 0.05, 0.35]) {
+        ctx.beginPath();
+        for (let i = 0; i <= 12; i++) {
+          const px = -s * 0.65 + i * s * 0.11, py = dy * s + Math.sin(i * 0.9) * s * 0.08;
+          if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+        }
+        ctx.stroke();
+      }
+    } else if (kind === "castle") {
+      ctx.fillStyle = "#6B6577";
+      ctx.fillRect(-s * 0.55, -s * 0.15, s * 1.1, s * 0.7);
+      ctx.fillRect(-s * 0.25, -s * 0.6, s * 0.5, s * 0.6);
+      for (const cx of [-0.55, -0.2, 0.2, 0.45]) ctx.fillRect(cx * s, -s * 0.3, s * 0.15, s * 0.16);
+      for (const cx of [-0.25, -0.05, 0.15]) ctx.fillRect(cx * s, -s * 0.75, s * 0.12, s * 0.16);
+      ctx.fillStyle = "#3A3446"; ctx.beginPath(); ctx.arc(0, s * 0.55, s * 0.18, Math.PI, 0); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function mapGeometry(w, h) {
+    const cw = Math.min(w - 40, 520), x0 = (w - cw) / 2, top = 112, bottom = h - 124;
+    return { cw, x0, top, bottom, px: i => x0 + MAP[i].x * cw, py: i => top + MAP[i].y * (bottom - top) };
+  }
+
+  function drawConquest(w, h, t) {
+    // Sea.
+    const sea = ctx.createLinearGradient(0, 0, 0, h);
+    sea.addColorStop(0, "#1B1446"); sea.addColorStop(1, "#2F1C63");
+    ctx.fillStyle = sea; ctx.fillRect(0, 0, w, h);
+    // Gentle waves.
+    ctx.save(); ctx.strokeStyle = "rgba(255,255,255,.05)"; ctx.lineWidth = 2;
+    for (let y = 30; y < h; y += 34) {
+      ctx.beginPath();
+      for (let x = -20; x <= w + 20; x += 20) ctx.lineTo(x, y + Math.sin((x + t / 40 + y) / 30) * 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const cwh = Math.min(w - 32, 488), hx0 = (w - cwh) / 2;
+    closeButton(hx0, 14, () => { screen = "menu"; });
+    text("Conquest", w / 2, 44, 24, 900, "#fff");
+
+    if (!camp.s) {
+      drawMapLand(w, h, t, true);
+      buttons.push({ x: 0, y: 0, w, h, run: () => {} });
+      panel(w, h, {
+        title: "Conquest", subtitle: "A strategy campaign",
+        body: "Lead the Azure Crown from Highkeep and capture the realm one territory at a time. Every attack is a Pairo match against an enemy commander, shaped by the land: spinning forests, tiny mountain symbols, shifting swamps and castle wheels. Territories earn gold for battle aids, and the Ash Legion strikes back. Take Dreadspire to win.",
+        primary: { label: "Start on Normal", run: () => camp.newGame("normal") },
+        links: [{ label: "Easy", run: () => camp.newGame("easy") }, { label: "Hard", run: () => camp.newGame("hard") }]
+      });
+      return;
+    }
+    const s = camp.s;
+    // Gold and turn.
+    const goldLabel = `${s.gold}`;
+    const gw = measure(goldLabel, 16, 700) + 44;
+    rrect(hx0 + cwh - gw, 17, gw, 34, 17, "rgba(255,255,255,.18)");
+    ctx.fillStyle = "#F2B600"; ctx.beginPath(); ctx.arc(hx0 + cwh - gw + 18, 34, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#B57F00"; ctx.lineWidth = 2; ctx.stroke();
+    text(goldLabel, hx0 + cwh - gw + 32, 40, 16, 700, "#fff", "left");
+    drawMapLand(w, h, t, false);
+
+    // Turn summary, on its own pill so the island never hides it.
+    const summary = `Turn ${s.turn}  ·  ${camp.owned("you")}/${MAP.length} lands  ·  +${camp.income()} gold a turn  ·  ${DIFFICULTY[s.diff].label}`;
+    const sw = Math.min(w - 32, measure(summary, 13, 700) + 28);
+    rrect((w - sw) / 2, 60, sw, 26, 13, "rgba(27,20,70,.88)");
+    text(summary, w / 2, 78, 13, 700, "rgba(255,255,255,.85)");
+
+    // Bottom bar.
+    const by = h - 70;
+    if (camp.sel >= 0) {
+      drawTerritorySheet(w, h, camp.sel);
+    } else {
+      const bw = Math.min(cwh, 360);
+      bigButton((w - bw) / 2, by, bw, 50, "Shop", false, () => { camp.shop = true; });
+      text(s.items.scout || s.items.frost || s.items.rally ? `Scout ×${s.items.scout}   Frost ×${s.items.frost}   Rally ×${s.items.rally}` : "Tap a glowing territory to attack it",
+        w / 2, by - 12, 13, 700, "rgba(255,255,255,.8)");
+    }
+
+    // Toast.
+    if (camp.toast) {
+      const k = (now() - camp.toast.at) / 3800;
+      if (k > 1) camp.toast = null;
+      else {
+        ctx.save(); ctx.globalAlpha = Math.min(1, (1 - k) * 5);
+        const tw = Math.min(w - 32, measure(camp.toast.text, 14, 700) + 32);
+        rrect((w - tw) / 2, 90, tw, 34, 17, "rgba(20,14,50,.92)");
+        text(camp.toast.text, w / 2, 112, 14, 700, "#fff");
+        ctx.restore();
+      }
+    }
+
+    if (camp.shop) drawShop(w, h);
+    else if (camp.notices.length) {
+      const n = camp.notices[0];
+      buttons.push({ x: 0, y: 0, w, h, run: () => {} });
+      panel(w, h, {
+        ...n,
+        primary: { label: n.primary.label, run: () => { camp.notices.shift(); n.primary.run(); } },
+        links: (n.links || []).map(L => ({ label: L.label, run: () => { camp.notices.shift(); L.run(); } }))
+      });
+    }
+  }
+
+  function drawMapLand(w, h, t, dim) {
+    const g = mapGeometry(w, h), R = g.cw * 0.2;
+    const s = camp.s;
+    // Land: an outline pass, then the parchment, so the territories read as one island.
+    ctx.fillStyle = "#5B4630";
+    for (let i = 0; i < MAP.length; i++) { ctx.beginPath(); ctx.arc(g.px(i), g.py(i), R + 4, 0, Math.PI * 2); ctx.fill(); }
+    for (const [a, b] of ROADS) {
+      ctx.strokeStyle = "#5B4630"; ctx.lineWidth = R * 1.6 + 8;
+      ctx.beginPath(); ctx.moveTo(g.px(a), g.py(a)); ctx.lineTo(g.px(b), g.py(b)); ctx.stroke();
+    }
+    ctx.fillStyle = "#D9C9A0";
+    for (let i = 0; i < MAP.length; i++) { ctx.beginPath(); ctx.arc(g.px(i), g.py(i), R, 0, Math.PI * 2); ctx.fill(); }
+    for (const [a, b] of ROADS) {
+      ctx.strokeStyle = "#D9C9A0"; ctx.lineWidth = R * 1.6;
+      ctx.beginPath(); ctx.moveTo(g.px(a), g.py(a)); ctx.lineTo(g.px(b), g.py(b)); ctx.stroke();
+    }
+    // A little texture: soft green meadows near each territory.
+    ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = "#6BAA4A";
+    for (let i = 0; i < MAP.length; i++) { ctx.beginPath(); ctx.arc(g.px(i) - R * 0.3, g.py(i) + R * 0.25, R * 0.45, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+    // Roads.
+    ctx.save();
+    ctx.setLineDash([6, 6]); ctx.lineCap = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "#9A7B4F";
+    for (const [a, b] of ROADS) { ctx.beginPath(); ctx.moveTo(g.px(a), g.py(a)); ctx.lineTo(g.px(b), g.py(b)); ctx.stroke(); }
+    ctx.restore();
+    if (dim || !s) return;
+
+    // Territories.
+    for (let i = 0; i < MAP.length; i++) {
+      const x = g.px(i), y = g.py(i), o = s.owner[i], col = OWNER_COLOR[o];
+      const canAttack = !s.over && camp.attackable(i);
+      if (canAttack) {
+        const k = REDUCED ? 0.5 : 0.5 + 0.5 * Math.sin(t / 300 + i);
+        ctx.save(); ctx.globalAlpha = 0.45 + 0.45 * k;
+        ctx.strokeStyle = "#F2B600"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(x, y, 30 + 3 * k, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      }
+      if (camp.sel === i) {
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, 33, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(40,26,20,.35)"; ctx.beginPath(); ctx.arc(x + 1, y + 3, 24, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#FBF6EA"; ctx.beginPath(); ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.stroke();
+      terrainIcon(MAP[i].terrain, x, y, 15);
+      // Banner.
+      ctx.strokeStyle = "#4A3A2A"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + 16, y - 16); ctx.lineTo(x + 16, y - 38); ctx.stroke();
+      const wave = REDUCED ? 0 : Math.sin(t / 250 + i) * 2;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.moveTo(x + 16, y - 38); ctx.lineTo(x + 32, y - 33 + wave); ctx.lineTo(x + 16, y - 28); ctx.closePath(); ctx.fill();
+      // Name and strength.
+      const label = MAP[i].name;
+      const lw = measure(label, 11, 700) + 10;
+      rrect(x - lw / 2, y + 27, lw, 16, 8, "rgba(251,246,234,.92)");
+      text(label, x, y + 39, 11, 700, "#3B2E22");
+      if (o !== "you") {
+        const p = camp.powerOf(i);
+        for (let k = 0; k < p; k++) {
+          ctx.fillStyle = o === "enemy" ? "#E63946" : "#6B6577";
+          ctx.beginPath(); ctx.arc(x - (p - 1) * 5 + k * 10, y + 50, 3.5, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      buttons.push({ x: x - 30, y: y - 40, w: 60, h: 80, run: () => { camp.sel = camp.sel === i ? -1 : i; sound.click(); } });
+    }
+  }
+
+  function drawTerritorySheet(w, h, i) {
+    const s = camp.s, m = MAP[i], ter = TERRAIN[m.terrain], o = s.owner[i];
+    const cw = Math.min(w - 32, 488), x0 = (w - cw) / 2, sh = 178, y = h - sh - 12;
+    buttons.push({ x: x0, y, w: cw, h: sh, run: () => {} });
+    rrect(x0, y, cw, sh, 24, "#fff");
+    terrainIcon(m.terrain, x0 + 40, y + 42, 18);
+    text(m.name, x0 + 72, y + 38, 20, 900, "#331F73", "left");
+    const ownerText = o === "you" ? "Yours" : o === "enemy" ? "Held by the Ash Legion" : "Neutral";
+    text(`${ter.name}  ·  ${ownerText}  ·  +${ter.income} gold a turn`, x0 + 72, y + 58, 13, 400, "rgba(51,31,115,.7)", "left");
+    closeButton(x0 + cw - 50, y + 10, () => { camp.sel = -1; });
+    // The close button is white-on-dark; redraw it dark on this light sheet.
+    ctx.strokeStyle = "#331F73"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x0 + cw - 36, y + 24); ctx.lineTo(x0 + cw - 24, y + 36); ctx.moveTo(x0 + cw - 24, y + 24); ctx.lineTo(x0 + cw - 36, y + 36); ctx.stroke();
+    if (o === "you") {
+      text(i === HOME ? "Your capital. Lose it and the campaign is over." : "Defend it when the Ash Legion attacks.", x0 + 20, y + 98, 15, 400, "#331F73", "left");
+      return;
+    }
+    const p = camp.powerOf(i), order = deckOrderFor(p);
+    const lines = wrap(`Power ${p}. First to ${targetFor(p)} matches, ${order + 1} symbols per card. ${ter.effect}`, cw - 40, 15, 400);
+    lines.slice(0, 2).forEach((l, k) => text(l, x0 + 20, y + 92 + k * 20, 15, 400, "#331F73", "left"));
+    if (camp.attackable(i) && !s.over) {
+      bigButton(x0 + 20, y + sh - 64, cw - 40, 50, `Attack ${m.name}`, true, () => startBattle(i, false, p));
+    } else {
+      text("Capture a neighbouring territory first.", x0 + 20, y + sh - 30, 14, 700, "rgba(51,31,115,.6)", "left");
+    }
+  }
+
+  function drawShop(w, h) {
+    const s = camp.s, cw = Math.min(w - 32, 400), x0 = (w - cw) / 2, ph = 92 + 3 * 82 + 60, y0 = Math.max(16, (h - ph) / 2);
+    ctx.fillStyle = "rgba(0,0,0,.45)"; ctx.fillRect(0, 0, w, h);
+    buttons.push({ x: 0, y: 0, w, h, run: () => {} });
+    rrect(x0, y0, cw, ph, 28, "rgba(51,31,115,.96)");
+    text("Shop", w / 2, y0 + 46, 28, 900, "#fff");
+    text(`You have ${s.gold} gold`, w / 2, y0 + 72, 14, 700, "#F2D06B");
+    let y = y0 + 92;
+    for (const [kind, item] of Object.entries(ITEMS)) {
+      rrect(x0 + 16, y, cw - 32, 70, 18, "rgba(255,255,255,.1)");
+      text(`${item.name}  ×${s.items[kind]}`, x0 + 32, y + 28, 17, 700, "#fff", "left");
+      for (const [k, line] of wrap(item.desc, cw - 170, 12, 400).slice(0, 2).entries()) {
+        text(line, x0 + 32, y + 48 + k * 15, 12, 400, "rgba(255,255,255,.75)", "left");
+      }
+      const can = s.gold >= item.price, bx = x0 + cw - 120, by = y + 16;
+      rrect(bx, by, 92, 38, 19, can ? "#F2B600" : "rgba(255,255,255,.15)");
+      text(`${item.price}`, bx + 46, by + 25, 15, 900, can ? "#331F73" : "rgba(255,255,255,.5)");
+      if (can) buttons.push({ x: bx, y: by, w: 92, h: 38, run: () => buy(kind) });
+      y += 82;
+    }
+    bigButton(x0 + 24, y + 4, cw - 48, 46, "Done", false, () => { camp.shop = false; });
+  }
+
+  // ---- drawing: a battle
+  function drawBattle(w, h, t) {
+    const b = battle, m = MAP[b.node], ter = TERRAIN[m.terrain];
+    const cw = Math.min(w - 32, 488), x0 = (w - cw) / 2;
+    closeButton(x0, 14, retreat);
+    soundButton(x0 + 50, 14);
+    text(`${b.defense ? "Defend" : "Attack"} ${m.name}`, w / 2 + 30, 32, 16, 900, "#fff");
+    text(`${ter.name}  ·  first to ${b.target}`, w / 2 + 30, 50, 12, 700, "rgba(255,255,255,.7)");
+
+    const de = Math.min(cw * 0.34, h * 0.16), dc = Math.min(cw * 0.52, h * 0.24);
+    const ey = 70 + de / 2 + 14, cy = ey + de / 2 + 18 + dc / 2;
+    const puY = cy + dc / 2 + 12;
+    const dh = Math.min(cw * 0.78, h - 34 - (puY + 50) - 8), hy = h - 34 - dh / 2;
+    const rot = c => (c.angle || 0) * Math.PI / 180;
+    const hidden = b.phase === "countdown" || b.phase === "intro";
+    const playing = b.phase === "playing";
+
+    // Enemy commander: score row and their card, ringed by the fuse that fills as they close in.
+    commanderRow(w / 2, 70, "Ash Legion", b.scores[1], b.target, "#FFB3BA");
+    const ex = w / 2;
+    b.enemyAt = { x: ex, y: ey };
+    drawCard(b.hands[1], ex, ey, de, { rot: rot(b.hands[1]), hidden, frozen: t < b.aiFrozenUntil });
+    if (playing && t >= b.aiFrozenUntil) {
+      const k = Math.max(0, Math.min(1, (t - b.aiStartAt) / (b.aiNextAt - b.aiStartAt)));
+      ctx.save();
+      ctx.strokeStyle = k > 0.8 ? "#FF4D5E" : "rgba(255,90,100,.85)"; ctx.lineWidth = 5; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(ex, ey, de / 2 + 7, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    if (b.leaving) {
+      const k = (t - b.leaving.start) / LEAVE_MS;
+      if (k >= 1) b.leaving = null;
+      else drawCard(b.leaving.card, w / 2, cy, dc * (1 - 0.6 * easeOut(k)), { alpha: 1 - k, rot: rot(b.leaving.card) });
+    }
+    const c = b.center, fly = Math.min(1, (t - c.flyAt) / FLY_MS);
+    if (fly < 1 && !REDUCED) {
+      const e = easeOut(fly), from = c.flyFrom === 0 ? { x: w / 2, y: hy, d: dh } : { x: ex, y: ey, d: de };
+      drawCard(c, lerp(from.x, w / 2, e), lerp(from.y, cy, e), lerp(from.d, dc, e), { rot: rot(c) });
+    } else {
+      drawCard(c, w / 2, cy, dc, { rot: rot(c), hidden });
+    }
+
+    // Battle aids.
+    const s = camp.s, kinds = ["scout", "frost", "rally"], bw = Math.min(110, (cw - 24) / 3);
+    kinds.forEach((kind, i) => {
+      const bx = w / 2 + (i - 1) * (bw + 12) - bw / 2, n = s.items[kind];
+      const ok = playing && n > 0 && !(kind === "rally" && b.rallied);
+      rrect(bx, puY, bw, 38, 19, ok ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.18)");
+      text(`${ITEMS[kind].name} ×${n}`, bx + bw / 2, puY + 25, 14, 700, ok ? "#331F73" : "rgba(255,255,255,.55)");
+      if (ok) buttons.push({ x: bx, y: puY, w: bw, h: 38, run: () => useItem(kind) });
+    });
+
+    // Your card.
+    const mine = b.hands[0];
+    drawCard(mine, w / 2, hy, dh, {
+      rot: rot(mine), hidden, shakeX: shake(b.shakeAt), frozen: t < b.frozenUntil,
+      onTap: playing ? (sym, sx, sy) => playerTap(sym, sx, sy) : null
+    });
+    if (t < b.scoutUntil && playing) {
+      const ans = shared(b.deck, b.center.index, mine.index), slot = mine.slots.find(q => q.symbol === ans);
+      if (slot) {
+        const [sx0, sy0] = slotXY(mine, slot), a = rot(mine);
+        const px = w / 2 + (sx0 * Math.cos(a) - sy0 * Math.sin(a)) * dh, py = hy + (sx0 * Math.sin(a) + sy0 * Math.cos(a)) * dh;
+        const pulse = 1 + 0.12 * Math.sin(t / 80);
+        ctx.save(); ctx.strokeStyle = "#F2B600"; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.arc(px, py, slot.size * dh * 0.62 * pulse, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      }
+    }
+    commanderRow(w / 2, h - 16, "You", b.scores[0], b.target, "#fff");
+
+    if (b.phase === "countdown") {
+      const el = (t - b.countdownAt) / 1000;
+      bigNumber(String(Math.max(1, COUNTDOWN_S - Math.floor(el))), w / 2, cy, el - Math.floor(el));
+    } else if (playing && t - b.goAt < 500) {
+      bigNumber("Fight!", w / 2, cy, (t - b.goAt) / 500);
+    }
+
+    if (b.phase === "intro") {
+      const secs = (POWER_SECONDS[b.power] * DIFFICULTY[camp.s.diff].mul).toFixed(1);
+      buttons.push({ x: 0, y: 0, w, h, run: () => {} });
+      panel(w, h, {
+        title: `${b.defense ? "Defend" : "Attack"} ${m.name}`, subtitle: `${ter.name}  ·  Power ${b.power}`,
+        body: `First to ${b.target} matches wins. Match your card against the centre card before the enemy commander does: they take about ${secs} seconds a match, and the red ring shows them closing in. ${ter.effect} A wrong tap freezes you for a moment.`,
+        primary: { label: "Fight!", run: () => { b.phase = "countdown"; b.countdownAt = now(); b.lastCount = -1; } },
+        links: b.defense ? [] : [{ label: "Back to map", run: () => { screen = "conquest"; } }]
+      });
+    } else if (b.phase === "over") {
+      buttons.push({ x: 0, y: 0, w, h, run: () => {} });
+      const title = b.won ? (b.defense ? `${m.name} holds!` : b.node === DREAD ? "Dreadspire falls!" : "Victory!") : (b.defense ? "Defeat" : "Retreat");
+      const body = b.won
+        ? (b.defense ? `You beat back the Ash Legion. +${20 * b.power} gold.` : `${m.name} is yours. +${25 * b.power} gold.`)
+        : (b.defense ? (b.node === HOME ? "The Ash Legion broke through to Highkeep." : `${m.name} falls to the Ash Legion.`) : "Your army falls back to regroup. Try again next turn.");
+      panel(w, h, {
+        title, body: `${b.scores[0]} – ${b.scores[1]}. ${body}`,
+        primary: { label: "Continue", run: applyBattle }, links: []
+      });
+    }
+  }
+
+  function commanderRow(cx, cy, label, score, target, color) {
+    const lw = measure(label, 15, 700), total = lw + 12 + target * 14 - 4;
+    let x = cx - total / 2;
+    text(label, x, cy + 5, 15, 700, "#fff", "left");
+    x += lw + 12;
+    for (let i = 0; i < target; i++) {
+      ctx.fillStyle = i < score ? color : "rgba(255,255,255,.25)";
+      ctx.beginPath(); ctx.arc(x + i * 14 + 5, cy, 5, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
   // ------------------------------------------------------------ Input
   function haptic(pattern) { try { navigator.vibrate?.(pattern); } catch {} }
 
@@ -1775,6 +2437,8 @@
     if (e.key === "Escape") {
       if (screen === "solo") { round.phase = "ready"; screen = round.level >= 0 ? "levels" : "menu"; }
       else if (screen === "match") leaveMatch();
+      else if (screen === "battle") retreat();
+      else if (screen === "conquest") { if (camp.shop) camp.shop = false; else if (camp.sel >= 0) camp.sel = -1; else screen = "menu"; }
       else if (screen === "online") closeOnline();
       else screen = "menu";
     } else if (e.key === "m" || e.key === "M") sound.setMuted(!sound.muted);
