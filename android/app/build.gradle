@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.pairo'
+    compileSdk 36
+
+    defaultConfig {
+        // CHANGE THIS before publishing: Google Play rejects "com.example" IDs,
+        // and the ID can never be changed after the first upload.
+        applicationId "com.example.pairo"
+        minSdk 24
+        targetSdk 36
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
