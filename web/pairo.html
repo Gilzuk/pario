@@ -873,7 +873,7 @@
     text("How to Play", tx, y, 28, 900, "#331F73", "left");
     y += 8;
     const sections = [
-      ["Conquest", "Capture the realm territory by territory, from Highkeep to Dreadspire. Each attack is a match against an enemy commander; forests spin the cards, mountains shrink the symbols, swamps shift them and castles turn them into wheels. Your lands earn gold for Scouts, Frost and Rally, and the Ash Legion attacks your border between turns."],
+      ["Conquest", "Capture the realm territory by territory, from Highkeep to Dreadspire. Each attack is a battle between two armies: every soldier raises a flag, and you shoot the enemy soldier whose flag matches a symbol on the centre banner before they find yours. Forests spin the symbols, mountains shrink them, swamps shuffle the ranks and castles turn the banner. Your lands earn gold for Scouts, Frost and Rally, and the Ash Legion attacks your border between turns."],
       ["The secret", "Any two cards share exactly one symbol, never more and never less. Symbols vary in size and rotation, so look carefully."],
       ["Levels", "Twelve levels: small decks first, then the full 8-symbol deck, spinning cards, tiny symbols and reshuffles. Reach the goal before time runs out for one star; score more for two or three. Each level unlocks the next."],
       ["Sprint and Wheels", "Tap the symbol both cards share. A wrong tap costs 3 seconds. Score as much as you can in 60 seconds. In Wheels, each card is two rings turning in opposite directions, and they speed up as you score."],
@@ -1715,10 +1715,10 @@
   // buys battle aids, and after every turn the Legion expands or attacks your border.
   const TERRAIN = {
     plains:   { name: "Plains",    effect: "Open ground, no tricks.",              cfg: {},                  income: 20 },
-    forest:   { name: "Forest",    effect: "The cards spin among the trees.",      cfg: { spin: true },      income: 15 },
-    mountain: { name: "Mountains", effect: "Tiny symbols in the high passes.",     cfg: { tiny: true },      income: 15 },
-    swamp:    { name: "Swamp",     effect: "Symbols shift every few seconds.",     cfg: { reshuffle: true }, income: 15 },
-    castle:   { name: "Castle",    effect: "Wheel cards: two rings turning.",      cfg: { wheels: true },    income: 30 }
+    forest:   { name: "Forest",    effect: "Forest winds: the symbols on the flags spin.",      cfg: { spin: true },      income: 15 },
+    mountain: { name: "Mountains", effect: "Thin mountain air: some symbols are tiny.",     cfg: { tiny: true },      income: 15 },
+    swamp:    { name: "Swamp",     effect: "Swamp mud: soldiers change places every few seconds.",     cfg: { reshuffle: true }, income: 15 },
+    castle:   { name: "Castle",    effect: "Castle walls: the banner's symbols turn and the flags sway.",      cfg: { wheels: true },    income: 30 }
   };
   const MAP = [
     { name: "Highkeep",    x: 0.50, y: 0.94, terrain: "castle",   power: 0 },
@@ -1786,17 +1786,40 @@
 
   function openConquest() { camp.sel = -1; camp.shop = false; screen = "conquest"; }
 
-  // ---- battle
+  // ---- battle: two armies
+  // Each army's front line raises flags, one symbol per soldier (the symbols of one card). The
+  // centre banner shows the centre card. Exactly one enemy flag matches a symbol on the banner:
+  // tap that soldier and your archers shoot him. The enemy commander hunts for YOUR soldier whose
+  // flag matches the banner. After every kill both armies raise new flags under a new banner.
+  // The army wiped out first loses.
+  const VOLLEY_MS = 720, RAISE_MS = 380, SHUFFLE_MS = 2600, MOVE_MS = 420;
   const battle = {
     node: -1, defense: false, power: 1, target: 5, cfg: {}, deck: null, dealer: null,
-    center: null, hands: [null, null], scores: [0, 0], phase: "intro",
-    countdownAt: LONG_AGO, lastCount: -1, goAt: LONG_AGO, overAt: LONG_AGO,
-    aiStartAt: 0, aiNextAt: 0, aiFrozenUntil: LONG_AGO, aiMissAt: LONG_AGO,
-    frozenUntil: LONG_AGO, shakeAt: LONG_AGO, leaving: null, won: false, scoutUntil: LONG_AGO, rallied: false,
-    enemyAt: { x: 0, y: 0 }
+    center: -1, cards: [-1, -1],          // card indices: banner, yours, the enemy's
+    banner: [], flags: [[], []],          // symbols in display order (flags[0] yours, [1] enemy)
+    sizes: [[], []], bannerSizes: [],     // symbol size multipliers (tiny symbols in the mountains)
+    pos: [[], []], prev: [[], []], moveAt: [LONG_AGO, LONG_AGO], shuffleAt: 0,
+    scores: [0, 0], phase: "intro",
+    countdownAt: LONG_AGO, lastCount: -1, goAt: LONG_AGO, overAt: LONG_AGO, raiseAt: LONG_AGO,
+    aiStartAt: 0, aiNextAt: 0, aiFrozenUntil: LONG_AGO, frozenUntil: LONG_AGO, shakeAt: LONG_AGO,
+    volley: null, won: false, scoutUntil: LONG_AGO, rallied: false, layout: null
   };
 
-  function battleCard(idx) { return initRingSpeeds(makeCard(battle.deck, idx, battle.cfg)); }
+  function newRound(t) {
+    const b = battle, d = b.dealer;
+    const c = d.draw(), y = d.draw(c), e = d.draw(c, y);
+    b.center = c; b.cards = [y, e];
+    b.banner = shuffle([...b.deck.cards[c]]);
+    b.flags = [shuffle([...b.deck.cards[y]]), shuffle([...b.deck.cards[e]])];
+    const sz = () => b.cfg.tiny ? 0.5 + rand() * 0.55 : 1;
+    b.sizes = [b.flags[0].map(sz), b.flags[1].map(sz)];
+    b.bannerSizes = b.banner.map(sz);
+    b.pos = [b.flags[0].map((_, i) => i), b.flags[1].map((_, i) => i)];
+    b.prev = [b.pos[0].slice(), b.pos[1].slice()];
+    b.moveAt = [LONG_AGO, LONG_AGO];
+    b.shuffleAt = t;
+    b.raiseAt = t;
+  }
 
   function startBattle(node, defense, power) {
     const b = battle;
@@ -1804,9 +1827,8 @@
     b.cfg = { ...TERRAIN[MAP[node].terrain].cfg };
     b.deck = DECKS[deckOrderFor(power)];
     b.dealer = new Dealer(b.deck);
-    const c = b.dealer.draw(), h0 = b.dealer.draw(c), h1 = b.dealer.draw(c, h0);
-    b.center = battleCard(c); b.hands = [battleCard(h0), battleCard(h1)];
-    b.scores = [0, 0]; b.phase = "intro"; b.leaving = null; b.won = false; b.rallied = false;
+    newRound(now());
+    b.scores = [0, 0]; b.phase = "intro"; b.volley = null; b.won = false; b.rallied = false;
     b.frozenUntil = LONG_AGO; b.aiFrozenUntil = LONG_AGO; b.scoutUntil = LONG_AGO; b.shakeAt = LONG_AGO;
     camp.sel = -1;
     screen = "battle";
@@ -1819,39 +1841,47 @@
   }
   function scheduleAi(t) { battle.aiStartAt = t; battle.aiNextAt = t + aiDelay(); }
 
+  /** The flag (index into flags[side]) whose symbol matches the banner. */
+  function matchingFlag(side) {
+    const b = battle, sym = shared(b.deck, b.center, b.cards[side]);
+    return b.flags[side].indexOf(sym);
+  }
+
   function updateBattle(t, dt) {
     if (screen !== "battle") return;
     const b = battle;
     if (b.phase === "countdown") {
       const e = (t - b.countdownAt) / 1000, n = COUNTDOWN_S - Math.floor(e);
       if (e >= COUNTDOWN_S) {
-        b.phase = "playing"; b.goAt = t;
-        b.center.born = t; b.hands[0].born = t; b.hands[1].born = t;
+        b.phase = "playing"; b.goAt = t; b.raiseAt = t; b.shuffleAt = t;
         scheduleAi(t);
         sound.go();
       } else if (n !== b.lastCount) { b.lastCount = n; sound.tick(); }
       return;
     }
-    if (b.phase !== "playing") return;
-    const cards = [b.center, b.hands[0], b.hands[1], b.leaving && b.leaving.card];
-    for (const c of cards) {
-      if (!c) continue;
-      if (c.spin && !REDUCED) c.angle += c.spin * dt;
-      if (c.wheel) {
-        const k = REDUCED ? 0.4 : 1.3;
-        c.ringAngle[1] += c.ringSpeed[1] * k * dt; c.ringAngle[2] += c.ringSpeed[2] * k * dt;
+    if (b.phase === "volley") {
+      if (t - b.volley.at >= VOLLEY_MS) {
+        const by = b.volley.by;
+        b.volley = null;
+        if (b.scores[by] >= b.target) finishBattle(by === 0);
+        else { b.phase = "playing"; newRound(t); scheduleAi(t); }
       }
+      return;
     }
-    if (b.cfg.reshuffle) {
-      for (const c of [b.center, b.hands[0], b.hands[1]]) {
-        if (t - c.layoutAt > RESHUFFLE_MS && t - c.flyAt > FLY_MS) { c.slots = layout(c.symbols, b.cfg.tiny); c.layoutAt = t; c.born = t; }
+    if (b.phase !== "playing") return;
+    // Swamp: soldiers change places every few seconds.
+    if (b.cfg.reshuffle && t - b.shuffleAt > SHUFFLE_MS) {
+      b.shuffleAt = t;
+      for (const side of [0, 1]) {
+        b.prev[side] = b.pos[side].slice();
+        b.pos[side] = shuffle(b.pos[side].slice());
+        b.moveAt[side] = t;
       }
     }
     // The enemy commander.
     if (t >= b.aiNextAt && t >= b.aiFrozenUntil) {
       if (rand() < DIFFICULTY[camp.s.diff].mistakes) {
-        b.aiFrozenUntil = t + FREEZE_MS; b.aiMissAt = t;
-        xMark(b.enemyAt.x, b.enemyAt.y, false);
+        b.aiFrozenUntil = t + FREEZE_MS;
         b.aiStartAt = b.aiFrozenUntil; b.aiNextAt = b.aiFrozenUntil + aiDelay() * 0.6;
       } else {
         claim(1);
@@ -1859,29 +1889,20 @@
     }
   }
 
+  /** Side p shoots the other army's soldier whose flag matches the banner. */
   function claim(p) {
-    const b = battle, t = now();
+    const b = battle, t = now(), side = 1 - p;
     b.scores[p]++;
-    const next = b.dealer.draw(b.center.index, b.hands[0].index, b.hands[1].index);
-    b.leaving = { card: b.center, start: t };
-    b.center = b.hands[p];
-    b.center.born = LONG_AGO; b.center.flyAt = t; b.center.flyFrom = p;
-    b.hands[p] = battleCard(next);
-    if (p === 1) {
-      sound.oppScore(); haptic(8);
-      burst(b.enemyAt.x, b.enemyAt.y, "#E63946");
-    }
-    if (b.scores[p] >= b.target) finishBattle(p === 0);
-    else scheduleAi(t);
+    b.volley = { by: p, side, idx: matchingFlag(side), at: t };
+    b.phase = "volley";
+    if (p === 1) { sound.oppScore(); haptic(8); }
   }
 
-  function playerTap(sym, sx, sy) {
+  function playerTap(i, sx, sy) {
     const b = battle;
     if (b.phase !== "playing" || now() < b.frozenUntil) return;
-    if (sym === shared(b.deck, b.center.index, b.hands[0].index)) {
+    if (i === matchingFlag(1)) {
       sound.match(); haptic(15);
-      burst(sx, sy, colorOf(sym));
-      floatText("+1", sx, sy - 12, "#fff", false);
       claim(0);
     } else {
       sound.miss(); haptic([30, 40, 30]);
@@ -1902,7 +1923,7 @@
       if (b.rallied) return;
       b.rallied = true;
       b.scores[0]++;
-      floatText("+1", W / 2, H * 0.55, "#FFE08A", false);
+      floatText("A soldier deserts!", W / 2, H * 0.3, "#FFE08A", false);
       if (b.scores[0] >= b.target) finishBattle(true);
     }
     s.items[kind]--;
@@ -1919,7 +1940,7 @@
   function retreat() {
     const b = battle;
     if (b.phase === "intro" && !b.defense) { screen = "conquest"; return; }
-    if (b.phase !== "over") finishBattle(false);
+    if (b.phase !== "over") { b.volley = null; finishBattle(false); }
   }
 
   /** Applies a finished battle to the campaign, then runs the enemy's turn. */
@@ -2219,7 +2240,7 @@
       return;
     }
     const p = camp.powerOf(i), order = deckOrderFor(p);
-    const lines = wrap(`Power ${p}. First to ${targetFor(p)} matches, ${order + 1} symbols per card. ${ter.effect}`, cw - 40, 15, 400);
+    const lines = wrap(`Power ${p}. Armies of ${targetFor(p)} soldiers, ${order + 1} flags per side. ${ter.effect}`, cw - 40, 15, 400);
     lines.slice(0, 2).forEach((l, k) => text(l, x0 + 20, y + 92 + k * 20, 15, 400, "#331F73", "left"));
     if (camp.attackable(i) && !s.over) {
       bigButton(x0 + 20, y + sh - 64, cw - 40, 50, `Attack ${m.name}`, true, () => startBattle(i, false, p));
@@ -2251,47 +2272,202 @@
     bigButton(x0 + 24, y + 4, cw - 48, 46, "Done", false, () => { camp.shop = false; });
   }
 
-  // ---- drawing: a battle
+  // ---- drawing: a battle between two armies
+  const ARMY = {
+    0: { cloth: "#1E78E6", dark: "#123C7A", light: "#7FB2F5", name: "Azure Crown" },
+    1: { cloth: "#D7263D", dark: "#6E1220", light: "#F59AA6", name: "Ash Legion" }
+  };
+
+  /** Where everything sits for the current screen size. */
+  function battleLayout(w, h) {
+    const b = battle, k = b.flags[0].length;
+    const cw = Math.min(w - 24, 500), x0 = (w - cw) / 2;
+    const cols = k <= 4 ? k : k / 2, rows = k <= 4 ? 1 : 2;
+    const bCols = k <= 4 ? k : k / 2, bRows = k <= 4 ? 1 : 2;
+    const cell = Math.min(k <= 4 ? 72 : 54, (cw * 0.62) / bCols);
+    const bannerW = bCols * cell + 24, bannerH = bRows * cell + 20;
+    const top = 90, bottom = h - 34, aidsH = 44;
+    const avail = bottom - top - aidsH - bannerH - 36;
+    const rowH = Math.max(68, Math.min(rows === 1 ? 175 : 126, avail / (2 * rows)));
+    const colW = cw / cols;
+    const flagW = Math.min(rows === 1 ? 98 : 74, colW * 0.8, rowH * 0.62), flagH = flagW * 0.74;
+    // Centre the whole battlefield vertically.
+    const used = 2 * rows * rowH + 12 + bannerH + 14 + aidsH;
+    const enemyTop = top + Math.max(0, (bottom - top - used) / 2);
+    const bannerTop = enemyTop + rows * rowH + 12;
+    const aidsY = bannerTop + bannerH + 14;
+    const mineTop = aidsY + aidsH;
+    const slot = (side, p) => {
+      const r = Math.floor(p / cols), c = p % cols;
+      const stagger = rows === 2 && r === 1 ? colW * 0.0 : 0;
+      return { x: x0 + (c + 0.5) * colW + stagger, top: (side === 1 ? enemyTop : mineTop) + r * rowH };
+    };
+    return { cw, x0, cols, rows, cell, bannerW, bannerH, bCols, bRows, rowH, colW, flagW, flagH, bannerTop, aidsY, mineTop, slot };
+  }
+
+  /** A soldier holding a flag overhead. `raise` 0..1 lifts the flag; `fall` 0..1 knocks him over. */
+  function drawSoldier(x, top, L, side, sym, sizeMul, o) {
+    const { raise = 1, fall = 0, frozen = false, glow = false, spin = 0, sway = 0 } = o;
+    const army = ARMY[side];
+    const feet = top + L.rowH - 6, s = Math.min(L.rowH * 0.42, L.colW * 0.5);
+    ctx.save();
+    if (fall > 0) {
+      ctx.translate(x, feet); ctx.rotate((side === 1 ? -1 : 1) * fall * Math.PI / 2); ctx.translate(-x, -feet);
+      ctx.globalAlpha = 1 - fall * 0.65;
+    }
+    // Shadow.
+    ctx.fillStyle = "rgba(20,10,40,.28)";
+    ctx.beginPath(); ctx.ellipse(x, feet + 2, s * 0.32, s * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+    // Legs and body.
+    ctx.fillStyle = army.dark;
+    ctx.fillRect(x - s * 0.13, feet - s * 0.2, s * 0.09, s * 0.2);
+    ctx.fillRect(x + s * 0.04, feet - s * 0.2, s * 0.09, s * 0.2);
+    ctx.fillStyle = army.cloth;
+    ctx.beginPath();
+    ctx.moveTo(x - s * 0.2, feet - s * 0.18); ctx.lineTo(x + s * 0.2, feet - s * 0.18);
+    ctx.lineTo(x + s * 0.16, feet - s * 0.56); ctx.lineTo(x - s * 0.16, feet - s * 0.56); ctx.closePath(); ctx.fill();
+    // Head and helmet.
+    const hy = feet - s * 0.68;
+    ctx.fillStyle = "#F1C9A5"; ctx.beginPath(); ctx.arc(x, hy, s * 0.12, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = army.dark; ctx.beginPath(); ctx.arc(x, hy - s * 0.02, s * 0.13, Math.PI, 0); ctx.fill();
+    ctx.fillRect(x - s * 0.16, hy - s * 0.03, s * 0.32, s * 0.04);
+    // Shield.
+    ctx.fillStyle = army.light; ctx.strokeStyle = army.dark; ctx.lineWidth = Math.max(1.5, s * 0.03);
+    ctx.beginPath(); ctx.arc(x - s * 0.2, feet - s * 0.36, s * 0.12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // Arms raise the pole; the flag rises with `raise`.
+    const flagBottom = lerp(hy - s * 0.1, top + 4 + L.flagH, raise);
+    ctx.strokeStyle = "#6B4A2B"; ctx.lineWidth = Math.max(2, s * 0.045); ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(x + s * 0.02, feet - s * 0.5); ctx.lineTo(x + s * 0.02, flagBottom - L.flagH - 4); ctx.stroke();
+    ctx.strokeStyle = army.cloth; ctx.lineWidth = Math.max(2, s * 0.06);
+    ctx.beginPath(); ctx.moveTo(x - s * 0.14, feet - s * 0.5); ctx.lineTo(x + s * 0.02, feet - s * 0.62); ctx.moveTo(x + s * 0.16, feet - s * 0.5); ctx.lineTo(x + s * 0.02, feet - s * 0.62); ctx.stroke();
+    if (raise > 0.02) {
+      const fw = L.flagW, fh = L.flagH, fx = x + s * 0.02 - fw / 2, fy = flagBottom - fh;
+      ctx.save();
+      ctx.globalAlpha *= Math.min(1, raise * 1.4);
+      ctx.translate(x, fy + fh / 2); ctx.rotate(sway); ctx.translate(-x, -(fy + fh / 2));
+      if (glow) {
+        ctx.shadowColor = "#F2B600"; ctx.shadowBlur = 18;
+      }
+      // Cloth with a waving lower edge.
+      ctx.fillStyle = frozen ? "#DCEBFF" : "#FFFDF7";
+      ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx + fw, fy);
+      for (let i = 0; i <= 8; i++) ctx.lineTo(fx + fw - i * fw / 8, fy + fh + Math.sin(i * 1.4 + now() / 220) * fh * 0.04);
+      ctx.closePath(); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = glow ? "#F2B600" : army.cloth; ctx.lineWidth = glow ? 4 : 3; ctx.stroke();
+      drawSymbol(ctx, sym, fx + fw / 2, fy + fh / 2, fh * 0.72 * sizeMul, spin);
+      if (frozen) { ctx.fillStyle = "rgba(30,120,230,.18)"; ctx.fillRect(fx, fy, fw, fh); }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawBanner(w, L, t, hidden) {
+    const b = battle, x = w / 2 - L.bannerW / 2, y = L.bannerTop;
+    // Pole and finial.
+    ctx.strokeStyle = "#6B4A2B"; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(x - 6, y - 8); ctx.lineTo(x - 6, y + L.bannerH + 14); ctx.stroke();
+    ctx.fillStyle = "#F2B600"; ctx.beginPath(); ctx.arc(x - 6, y - 10, 5, 0, Math.PI * 2); ctx.fill();
+    // Cloth.
+    ctx.save();
+    ctx.shadowColor = "rgba(20,10,40,.35)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
+    ctx.fillStyle = "#FFF7DD";
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for (let i = 0; i <= 10; i++) ctx.lineTo(x + i * L.bannerW / 10, y + Math.sin(i * 0.9 + t / 300) * 2.5);
+    ctx.lineTo(x + L.bannerW, y + L.bannerH);
+    for (let i = 10; i >= 0; i--) ctx.lineTo(x + i * L.bannerW / 10, y + L.bannerH + Math.sin(i * 0.9 + t / 300) * 2.5);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = "#C99700"; ctx.lineWidth = 4;
+    ctx.strokeRect(x + 4, y + 4, L.bannerW - 8, L.bannerH - 8);
+    if (hidden) {
+      text("?", w / 2, y + L.bannerH / 2 + 14, 40, 900, "rgba(51,31,115,.25)");
+      return;
+    }
+    b.banner.forEach((sym, i) => {
+      const r = Math.floor(i / L.bCols), c = i % L.bCols;
+      const cx = x + 12 + (c + 0.5) * L.cell, cy = y + 10 + (r + 0.5) * L.cell;
+      const turn = b.cfg.wheels && !REDUCED ? t / 1000 * (i % 2 ? -0.9 : 0.9) : 0;
+      drawSymbol(ctx, sym, cx, cy, L.cell * 0.74 * b.bannerSizes[i], turn);
+    });
+  }
+
   function drawBattle(w, h, t) {
     const b = battle, m = MAP[b.node], ter = TERRAIN[m.terrain];
+    const L = battleLayout(w, h);
+    b.layout = L;
     const cw = Math.min(w - 32, 488), x0 = (w - cw) / 2;
+    // A battlefield: grass with a worn strip down the middle.
+    const field = ctx.createLinearGradient(0, 0, 0, h);
+    field.addColorStop(0, "#3E5F2E"); field.addColorStop(0.5, "#6E8B3D"); field.addColorStop(1, "#3E5F2E");
+    ctx.fillStyle = field; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(160,130,80,.25)"; ctx.fillRect(0, L.bannerTop - 14, w, L.bannerH + 28);
+    ctx.fillStyle = "rgba(20,10,40,.55)"; ctx.fillRect(0, 0, w, 84);
+
     closeButton(x0, 14, retreat);
     soundButton(x0 + 50, 14);
     text(`${b.defense ? "Defend" : "Attack"} ${m.name}`, w / 2 + 30, 32, 16, 900, "#fff");
-    text(`${ter.name}  ·  first to ${b.target}`, w / 2 + 30, 50, 12, 700, "rgba(255,255,255,.7)");
+    text(`${ter.name}  ·  armies of ${b.target}`, w / 2 + 30, 50, 12, 700, "rgba(255,255,255,.75)");
+    commanderRow(w / 2, 70, ARMY[1].name, b.target - b.scores[0], b.target, ARMY[1].light);
 
-    const de = Math.min(cw * 0.34, h * 0.16), dc = Math.min(cw * 0.52, h * 0.24);
-    const ey = 70 + de / 2 + 14, cy = ey + de / 2 + 18 + dc / 2;
-    const puY = cy + dc / 2 + 12;
-    const dh = Math.min(cw * 0.78, h - 34 - (puY + 50) - 8), hy = h - 34 - dh / 2;
-    const rot = c => (c.angle || 0) * Math.PI / 180;
     const hidden = b.phase === "countdown" || b.phase === "intro";
     const playing = b.phase === "playing";
+    const rise = hidden ? 0 : Math.min(1, (t - b.raiseAt) / RAISE_MS);
+    const spinOf = (side, i) => b.cfg.spin && !REDUCED ? t / 1000 * (i % 2 ? 1.2 : -1.2) + side : 0;
+    const swayOf = i => Math.sin(t / 400 + i) * (b.cfg.wheels ? 0.09 : 0.04);
 
-    // Enemy commander: score row and their card, ringed by the fuse that fills as they close in.
-    commanderRow(w / 2, 70, "Ash Legion", b.scores[1], b.target, "#FFB3BA");
-    const ex = w / 2;
-    b.enemyAt = { x: ex, y: ey };
-    drawCard(b.hands[1], ex, ey, de, { rot: rot(b.hands[1]), hidden, frozen: t < b.aiFrozenUntil });
+    const scoutIdx = t < b.scoutUntil && playing ? matchingFlag(1) : -1;
+    for (const side of [1, 0]) {
+      const frozen = side === 1 ? t < b.aiFrozenUntil : t < b.frozenUntil;
+      b.flags[side].forEach((sym, i) => {
+        // Position, sliding when the swamp shuffles the ranks.
+        const mk = Math.min(1, (t - b.moveAt[side]) / MOVE_MS), e = easeOut(mk);
+        const a = L.slot(side, b.prev[side][i]), z = L.slot(side, b.pos[side][i]);
+        let x = lerp(a.x, z.x, e), top = lerp(a.top, z.top, e);
+        if (side === 0) x += shake(b.shakeAt);
+        let fall = 0;
+        const v = b.volley;
+        if (v && v.side === side && v.idx === i) fall = Math.max(0, Math.min(1, (t - v.at - 230) / 300));
+        const stagger = Math.max(0, Math.min(1, (rise * (RAISE_MS + 160) - i * 20) / RAISE_MS));
+        drawSoldier(x, top, L, side, sym, b.sizes[side][i], {
+          raise: stagger, fall, frozen, glow: side === 1 && i === scoutIdx, spin: spinOf(side, i), sway: swayOf(i)
+        });
+        if (side === 1 && playing && t >= b.frozenUntil) {
+          buttons.push({ x: x - L.colW / 2, y: top, w: L.colW, h: L.rowH, run: () => playerTap(i, x, top + L.flagH / 2) });
+        }
+      });
+    }
+
+    drawBanner(w, L, t, hidden);
+
+    // The volley: an arrow from the shooter's army to the fallen soldier.
+    if (b.volley) {
+      const v = b.volley, k = Math.min(1, (t - v.at) / 230);
+      const vi = b.pos[v.side][v.idx], target = L.slot(v.side, vi);
+      const tx = target.x, ty = target.top + L.rowH * 0.55;
+      const sx = w / 2, sy = v.side === 1 ? L.mineTop + 10 : L.bannerTop - 4;
+      const ax = lerp(sx, tx, k), ay = lerp(sy, ty, k), ang = Math.atan2(ty - sy, tx - sx);
+      if (k < 1) {
+        ctx.save();
+        ctx.strokeStyle = "#3B2A1A"; ctx.lineWidth = 3; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(ax - Math.cos(ang) * 26, ay - Math.sin(ang) * 26); ctx.lineTo(ax, ay); ctx.stroke();
+        ctx.fillStyle = "#3B2A1A";
+        ctx.beginPath(); ctx.moveTo(ax + Math.cos(ang) * 6, ay + Math.sin(ang) * 6);
+        ctx.lineTo(ax + Math.cos(ang + 2.5) * 8, ay + Math.sin(ang + 2.5) * 8);
+        ctx.lineTo(ax + Math.cos(ang - 2.5) * 8, ay + Math.sin(ang - 2.5) * 8); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      } else if (!v.hit) {
+        v.hit = true;
+        burst(tx, ty, v.side === 1 ? "#D7263D" : "#1E78E6");
+        if (v.by === 0) floatText("Hit!", tx, target.top + 10, "#fff", false);
+      }
+    }
+
+    // The enemy takes aim: a bar that fills as they close in.
     if (playing && t >= b.aiFrozenUntil) {
       const k = Math.max(0, Math.min(1, (t - b.aiStartAt) / (b.aiNextAt - b.aiStartAt)));
-      ctx.save();
-      ctx.strokeStyle = k > 0.8 ? "#FF4D5E" : "rgba(255,90,100,.85)"; ctx.lineWidth = 5; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.arc(ex, ey, de / 2 + 7, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2); ctx.stroke();
-      ctx.restore();
-    }
-
-    if (b.leaving) {
-      const k = (t - b.leaving.start) / LEAVE_MS;
-      if (k >= 1) b.leaving = null;
-      else drawCard(b.leaving.card, w / 2, cy, dc * (1 - 0.6 * easeOut(k)), { alpha: 1 - k, rot: rot(b.leaving.card) });
-    }
-    const c = b.center, fly = Math.min(1, (t - c.flyAt) / FLY_MS);
-    if (fly < 1 && !REDUCED) {
-      const e = easeOut(fly), from = c.flyFrom === 0 ? { x: w / 2, y: hy, d: dh } : { x: ex, y: ey, d: de };
-      drawCard(c, lerp(from.x, w / 2, e), lerp(from.y, cy, e), lerp(from.d, dc, e), { rot: rot(c) });
-    } else {
-      drawCard(c, w / 2, cy, dc, { rot: rot(c), hidden });
+      rrect(L.x0, 80, L.cw, 5, 2.5, "rgba(255,255,255,.18)");
+      rrect(L.x0, 80, Math.max(5, L.cw * k), 5, 2.5, k > 0.8 ? "#FF4D5E" : "rgba(255,110,120,.9)");
     }
 
     // Battle aids.
@@ -2299,34 +2475,18 @@
     kinds.forEach((kind, i) => {
       const bx = w / 2 + (i - 1) * (bw + 12) - bw / 2, n = s.items[kind];
       const ok = playing && n > 0 && !(kind === "rally" && b.rallied);
-      rrect(bx, puY, bw, 38, 19, ok ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.18)");
-      text(`${ITEMS[kind].name} ×${n}`, bx + bw / 2, puY + 25, 14, 700, ok ? "#331F73" : "rgba(255,255,255,.55)");
-      if (ok) buttons.push({ x: bx, y: puY, w: bw, h: 38, run: () => useItem(kind) });
+      rrect(bx, L.aidsY, bw, 34, 17, ok ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.2)");
+      text(`${ITEMS[kind].name} ×${n}`, bx + bw / 2, L.aidsY + 22, 13, 700, ok ? "#331F73" : "rgba(255,255,255,.6)");
+      if (ok) buttons.push({ x: bx, y: L.aidsY, w: bw, h: 34, run: () => useItem(kind) });
     });
 
-    // Your card.
-    const mine = b.hands[0];
-    drawCard(mine, w / 2, hy, dh, {
-      rot: rot(mine), hidden, shakeX: shake(b.shakeAt), frozen: t < b.frozenUntil,
-      onTap: playing ? (sym, sx, sy) => playerTap(sym, sx, sy) : null
-    });
-    if (t < b.scoutUntil && playing) {
-      const ans = shared(b.deck, b.center.index, mine.index), slot = mine.slots.find(q => q.symbol === ans);
-      if (slot) {
-        const [sx0, sy0] = slotXY(mine, slot), a = rot(mine);
-        const px = w / 2 + (sx0 * Math.cos(a) - sy0 * Math.sin(a)) * dh, py = hy + (sx0 * Math.sin(a) + sy0 * Math.cos(a)) * dh;
-        const pulse = 1 + 0.12 * Math.sin(t / 80);
-        ctx.save(); ctx.strokeStyle = "#F2B600"; ctx.lineWidth = 5;
-        ctx.beginPath(); ctx.arc(px, py, slot.size * dh * 0.62 * pulse, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
-      }
-    }
-    commanderRow(w / 2, h - 16, "You", b.scores[0], b.target, "#fff");
+    commanderRow(w / 2, h - 16, "Your army", b.target - b.scores[1], b.target, ARMY[0].light);
 
     if (b.phase === "countdown") {
       const el = (t - b.countdownAt) / 1000;
-      bigNumber(String(Math.max(1, COUNTDOWN_S - Math.floor(el))), w / 2, cy, el - Math.floor(el));
-    } else if (playing && t - b.goAt < 500) {
-      bigNumber("Fight!", w / 2, cy, (t - b.goAt) / 500);
+      bigNumber(String(Math.max(1, COUNTDOWN_S - Math.floor(el))), w / 2, L.bannerTop + L.bannerH / 2, el - Math.floor(el));
+    } else if (playing && t - b.goAt < 600) {
+      bigNumber("Charge!", w / 2, L.bannerTop + L.bannerH / 2, (t - b.goAt) / 600);
     }
 
     if (b.phase === "intro") {
@@ -2334,8 +2494,8 @@
       buttons.push({ x: 0, y: 0, w, h, run: () => {} });
       panel(w, h, {
         title: `${b.defense ? "Defend" : "Attack"} ${m.name}`, subtitle: `${ter.name}  ·  Power ${b.power}`,
-        body: `First to ${b.target} matches wins. Match your card against the centre card before the enemy commander does: they take about ${secs} seconds a match, and the red ring shows them closing in. ${ter.effect} A wrong tap freezes you for a moment.`,
-        primary: { label: "Fight!", run: () => { b.phase = "countdown"; b.countdownAt = now(); b.lastCount = -1; } },
+        body: `Two armies of ${b.target}. Every soldier raises a flag; exactly one enemy flag matches a symbol on the centre banner. Tap that soldier to shoot him. The Ash Legion hunts for your matching soldier, about every ${secs} seconds; the red bar shows them taking aim. ${ter.effect}`,
+        primary: { label: "To battle!", run: () => { b.phase = "countdown"; b.countdownAt = now(); b.lastCount = -1; } },
         links: b.defense ? [] : [{ label: "Back to map", run: () => { screen = "conquest"; } }]
       });
     } else if (b.phase === "over") {
@@ -2345,19 +2505,20 @@
         ? (b.defense ? `You beat back the Ash Legion. +${20 * b.power} gold.` : `${m.name} is yours. +${25 * b.power} gold.`)
         : (b.defense ? (b.node === HOME ? "The Ash Legion broke through to Highkeep." : `${m.name} falls to the Ash Legion.`) : "Your army falls back to regroup. Try again next turn.");
       panel(w, h, {
-        title, body: `${b.scores[0]} – ${b.scores[1]}. ${body}`,
+        title, body: `${b.target - b.scores[1]} of your soldiers stand, ${b.target - b.scores[0]} of theirs. ${body}`,
         primary: { label: "Continue", run: applyBattle }, links: []
       });
     }
   }
 
-  function commanderRow(cx, cy, label, score, target, color) {
-    const lw = measure(label, 15, 700), total = lw + 12 + target * 14 - 4;
-    let x = cx - total / 2;
+  /** A label with one pip per soldier still standing. */
+  function commanderRow(cx, cy, label, alive, total, color) {
+    const lw = measure(label, 15, 700), n = Math.max(0, alive), tw = lw + 12 + total * 14 - 4;
+    let x = cx - tw / 2;
     text(label, x, cy + 5, 15, 700, "#fff", "left");
     x += lw + 12;
-    for (let i = 0; i < target; i++) {
-      ctx.fillStyle = i < score ? color : "rgba(255,255,255,.25)";
+    for (let i = 0; i < total; i++) {
+      ctx.fillStyle = i < n ? color : "rgba(255,255,255,.22)";
       ctx.beginPath(); ctx.arc(x + i * 14 + 5, cy, 5, 0, Math.PI * 2); ctx.fill();
     }
   }
