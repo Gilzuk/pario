@@ -10,4 +10,4 @@ It's published as a Claude artifact. That's where it gets the page wrapper (doct
 
     python3 web/build_pages.py
 
-To publish: in the repository's **Settings → Pages**, set **Source** to *Deploy from a branch*, **Branch** to `main` and the folder to `/docs`. On Pages, every mode works except Play Online, which needs the Claude artifact runtime; the page explains this when someone opens it.
+To publish: in the repository's **Settings → Pages**, set **Source** to *Deploy from a branch*, **Branch** to `main` and the folder to `/docs`. If the folder is left at `/ (root)`, the small `index.html` at the repository root forwards visitors to `docs/`, so the game opens either way. On Pages, every mode works except Play Online, which needs the Claude artifact runtime; the page explains this when someone opens it.
